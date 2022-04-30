@@ -1,3 +1,14 @@
+# ##################################################################### #
+# Authored by:
+# Peikai Li
+# Ipek Ilayda Onur
+# ##################################################################### #
+
+from mpl_toolkits.axes_grid1 import make_axes_locatable
+import matplotlib.pyplot as plt
+import torch
+import matplotlib.cm as cm
+import matplotlib.mlab as mlab
 import os
 from functools import partial
 import torch
@@ -5,6 +16,108 @@ import torch.nn as nn
 import numpy as np
 from PIL import Image
 
+# index for power spectrum
+ind_ps = np.load('../data/ind_ps.npy', allow_pickle=True).tolist()
+
+"""
+Plots CMB maps
+"""
+
+
+def Plot_CMB_Map(Map_to_Plot, c_min, c_max, X_width, Y_width):
+    print("map mean:", np.mean(Map_to_Plot), "map rms:", np.std(Map_to_Plot))
+    plt.figure(figsize=(10, 10))
+    im = plt.imshow(Map_to_Plot, interpolation='bilinear', origin='lower', cmap=cm.RdBu_r)
+    im.set_clim(c_min, c_max)
+    ax = plt.gca()
+    divider = make_axes_locatable(ax)
+    cax = divider.append_axes("right", size="5%", pad=0.25)
+
+    cbar = plt.colorbar(im, cax=cax)
+    im.set_extent([0, X_width, 0, Y_width])
+    plt.ylabel('angle $[^\circ]$')
+    plt.xlabel('angle $[^\circ]$')
+    plt.show()
+    return (0)
+
+
+"""
+    Calculates 2D power spectrum using Fast Fourier Transform
+
+    input: Map1
+           Map2 
+
+    output: 
+        CL_array
+        FMap  : Fourier transform map
+        PSMap : power spectrum map
+        Phase : Phase
+
+"""
+
+
+def calculate_2d_spectrum(Map1, Map2):
+    # get the 2d fourier transform of the maps
+    FMap1 = torch.fft.ifft2(np.fft.fftshift(Map1))
+    FMap2 = torch.fft.ifft2(np.fft.fftshift(Map2))
+    PSMap_cross = torch.fft.fftshift(np.real(np.conj(FMap1) * FMap2))
+    PSMap_auto1 = torch.fft.fftshift(np.real(np.conj(FMap1) * FMap1))
+    PSMap_auto2 = torch.fft.fftshift(np.real(np.conj(FMap2) * FMap2))
+    Phase1 = torch.angle(FMap1)
+    Phase2 = torch.angle(FMap2)
+
+    maps = {
+        'FMap1': FMap1,
+        'FMap2': FMap2,
+        'PSMap_cross': PSMap_cross,
+        'PSMap_auto1': PSMap_auto1,
+        'PSMap_auto2': PSMap_auto2,
+        'Phase1': Phase1,
+        'Phase2': Phase2
+    }
+
+    N_bins = 69
+    ell_array = torch.arange(N_bins)
+    CL_cross = torch.zeros(N_bins)
+    CL_auto1 = torch.zeros(N_bins)
+    CL_auto2 = torch.zeros(N_bins)
+    n_l = torch.zeros(N_bins)
+
+    for i in range(N_bins):
+        CL_cross[i] = torch.mean(PSMap_cross[ind_ps[i]])
+        CL_auto1[i] = torch.mean(PSMap_auto1[ind_ps[i]])
+        CL_auto2[i] = torch.mean(PSMap_auto2[ind_ps[i]])
+        n_l[i] = len(ind_ps[i])
+
+    CL_arrays = {
+        'CL_cross': CL_cross,
+        'CL_auto1': CL_auto1,
+        'CL_auto2': CL_auto2,
+        'n_l': n_l
+    }
+    return maps, CL_arrays
+
+
+"""
+Calculates the signal to noise ratio of Map1 and Map2
+where CL arrays of the maps are given in the CL_array object
+"""
+
+
+def calculate_signal_to_noise(CL_arrays):
+    CL_cross = CL_arrays['CL_cross']
+    CL_auto1 = CL_arrays['CL_auto1']
+    CL_auto2 = CL_arrays['CL_auto2']
+    n_l = CL_arrays['n_l']
+
+    # return the power spectrum and ell bins
+    return CL_cross ** 2 * n_l / 2 / CL_auto1 / CL_auto2
+
+
+# ##################################################################### #
+# Taken from
+# https://github.com/JeongHyunJin/Jeong2020_SolarFarsideMagnetograms/blob/master/utils.py
+# ##################################################################### #
 
 def get_grid(input, is_real=True):
     if is_real:
@@ -50,29 +163,30 @@ class Manager(object):
 
     @staticmethod
     def report_loss(package):
-        print("Epoch: {} [{:.{prec}}%] Current_step: {} D_loss: {:.{prec}}  G_loss: {:.{prec}}  L2_loss: {:.{prec}}".
-              format(package['Epoch'], package['current_step']/package['total_step'] * 100, package['current_step'],
-                     package['D_loss'], package['G_loss'], package['L2_loss'], prec=5))
+        print(
+            "Epoch: {} [{:.{prec}}%] Current_step: {} D_loss: {:.{prec}}  G_loss: {:.{prec}}  L2_loss: {:.{prec}} C2_loss: {:.{prec}}".
+                format(package['Epoch'], package['current_step'] / package['total_step'] * 100, package['current_step'],
+                       package['D_loss'], package['G_loss'], package['L2_loss'], package['C_loss'], prec=5))
 
     def adjust_dynamic_range(self, data, drange_in, drange_out):
         if drange_in != drange_out:
             if self.dtype == 32:
                 scale = (np.float32(drange_out[1]) - np.float32(drange_out[0])) / (
-                            np.float32(drange_in[1]) - np.float32(drange_in[0]))
+                        np.float32(drange_in[1]) - np.float32(drange_in[0]))
                 bias = (np.float32(drange_out[0]) - np.float32(drange_in[0]) * scale)
             elif self.dtype == 16:
                 scale = (np.float16(drange_out[1]) - np.float16(drange_out[0])) / (
-                            np.float16(drange_in[1]) - np.float16(drange_in[0]))
+                        np.float16(drange_in[1]) - np.float16(drange_in[0]))
                 bias = (np.float16(drange_out[0]) - np.float16(drange_in[0]) * scale)
             data = data * scale + bias
         return data
 
     def tensor2image(self, image_tensor):
         np_image = image_tensor.squeeze().cpu().float().numpy()
-        if len(np_image.shape) == 3:
-            np_image = np.transpose(np_image, (1, 2, 0))  # HWC
-        else:
-            pass
+        # if len(np_image.shape) == 3:
+        #     np_image = np.transpose(np_image, (1, 2, 0))  # HWC
+        # else:
+        #     pass
 
         np_image = self.adjust_dynamic_range(np_image, drange_in=[-1., 1.], drange_out=[0, 255])
         np_image = np.clip(np_image, 0, 255).astype(np.uint8)
@@ -89,8 +203,8 @@ class Manager(object):
             self.save_image(package['generated_tensor'], path_fake)
 
         elif model:
-            path_D = os.path.join(self.opt.model_dir, str(package['current_step']) + '_' + 'D_N2.pt')
-            path_G = os.path.join(self.opt.model_dir, str(package['current_step']) + '_' + 'G_N2.pt')
+            path_D = os.path.join(self.opt.model_dir, str(package['current_step']) + '_' + 'D_N2_fv.pt')
+            path_G = os.path.join(self.opt.model_dir, str(package['current_step']) + '_' + 'G_N2_fv.pt')
             torch.save(package['D_state_dict'], path_D)
             torch.save(package['G_state_dict'], path_G)
 
@@ -101,7 +215,7 @@ class Manager(object):
         if package['current_step'] % self.opt.report_freq == 0:
             self.report_loss(package)
 
-        if package['current_step'] % self.opt.save_freq == 0:
+        if package['save_alert'] < 0.057:
             self.save(package, model=True)
 
 
@@ -127,39 +241,3 @@ def weights_init(module):
     elif isinstance(module, nn.BatchNorm2d):
         module.weight.detach().normal_(1.0, 0.02)
         module.bias.detach().fill_(0.0)
-
-
-
-def calculate_2d_spectrum(Map1,Map2,delta_ell,ell_max,pix_size,N):
-    "calcualtes the power spectrum of a 2d map by FFTing, squaring, and azimuthally averaging"
-    N=int(N)
-    # make a 2d ell coordinate system
-    ones = np.ones(N)
-    inds  = (np.arange(N)+.5 - N/2.) /(N-1.)
-    kX = np.outer(ones,inds) / (pix_size/60. * np.pi/180.)
-    kY = np.transpose(kX)
-    K = np.sqrt(kX**2. + kY**2.)
-    ell_scale_factor = 2. * np.pi 
-    ell2d = K * ell_scale_factor
-    
-    # make an array to hold the power spectrum results
-    N_bins = int(ell_max/delta_ell)
-    ell_array = np.arange(N_bins)
-    CL_array = np.zeros(N_bins)
-    
-    # get the 2d fourier transform of the map
-    FMap1 = np.fft.ifft2(np.fft.fftshift(Map1))
-    FMap2 = np.fft.ifft2(np.fft.fftshift(Map2))
-    PSMap = np.fft.fftshift(np.real(np.conj(FMap1) * FMap2))
-    # fill out the spectra
-    i = 0
-    while (i < N_bins):
-        ell_array[i] = (i + 0.5) * delta_ell
-        inds_in_bin = ((ell2d >= (i* delta_ell)) * (ell2d < ((i+1)* delta_ell))).nonzero()
-        CL_array[i] = np.mean(PSMap[inds_in_bin])
-        #print i, ell_array[i], inds_in_bin, CL_array[i]
-        i = i + 1
- 
-    # return the power spectrum and ell bins
-    return(ell_array,CL_array*np.sqrt(pix_size /60.* np.pi/180.)*2.)
-
